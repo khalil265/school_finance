@@ -21,7 +21,7 @@
 
     <name>school-finance-backend</name>
     <description>
-        Backend de gestion scolaire, financière, comptable et budgétaire
+        Backend de gestion scolaire, financiÃ¨re, comptable et budgÃ©taire
     </description>
 
     <properties>
@@ -133,6 +133,39 @@
             <groupId>org.springframework.boot</groupId>
             <artifactId>spring-boot-starter-security-test</artifactId>
             <scope>test</scope>
+        </dependency>
+
+    
+        <!-- OAuth2 Resource Server / JWT -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-oauth2-resource-server</artifactId>
+        </dependency>
+    
+        <!-- PDF generation -->
+        <dependency>
+            <groupId>com.github.librepdf</groupId>
+            <artifactId>openpdf</artifactId>
+            <version>3.0.5</version>
+        </dependency>
+
+        <!-- QR Code -->
+        <dependency>
+            <groupId>com.google.zxing</groupId>
+            <artifactId>core</artifactId>
+            <version>3.5.4</version>
+        </dependency>
+
+        <dependency>
+            <groupId>com.google.zxing</groupId>
+            <artifactId>javase</artifactId>
+            <version>3.5.4</version>
+        </dependency>
+
+        <!-- AOP for automatic audit -->
+        <dependency>
+            <groupId>org.springframework.boot</groupId>
+            <artifactId>spring-boot-starter-aspectj</artifactId>
         </dependency>
 
     </dependencies>

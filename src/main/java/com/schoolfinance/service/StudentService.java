@@ -1,0 +1,375 @@
+package com.schoolfinance.service;
+
+import com.schoolfinance.dto.student.*;
+import com.schoolfinance.entity.academic.Enrollment;
+import com.schoolfinance.entity.academic.SchoolClass;
+import com.schoolfinance.entity.academic.Student;
+import com.schoolfinance.entity.administration.AcademicYear;
+import com.schoolfinance.entity.administration.Establishment;
+import com.schoolfinance.enums.EnrollmentStatus;
+import com.schoolfinance.enums.StudentStatus;
+import com.schoolfinance.repository.academic.EnrollmentRepository;
+import com.schoolfinance.repository.academic.SchoolClassRepository;
+import com.schoolfinance.repository.academic.StudentRepository;
+import com.schoolfinance.repository.administration.AcademicYearRepository;
+import com.schoolfinance.repository.administration.EstablishmentRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.data.domain.Page;
+import org.springframework.data.domain.Pageable;
+import org.springframework.http.HttpStatus;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.time.LocalDate;
+import java.util.List;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+public class StudentService {
+
+    private final StudentRepository studentRepository;
+
+    private final EnrollmentRepository enrollmentRepository;
+
+    private final SchoolClassRepository schoolClassRepository;
+
+    private final AcademicYearRepository academicYearRepository;
+
+    private final EstablishmentRepository establishmentRepository;
+
+
+    @Transactional
+    public StudentResponse create(
+            StudentCreateRequest request
+    ) {
+
+        if (studentRepository.existsByRegistrationNumber(
+                request.registrationNumber()
+        )) {
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Un eleve avec ce matricule existe deja."
+            );
+        }
+
+        Establishment establishment =
+                establishmentRepository
+                        .findById(request.establishmentId())
+                        .orElseThrow(() ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Etablissement introuvable."
+                                )
+                        );
+
+        Student student =
+                Student.builder()
+                        .establishment(establishment)
+                        .registrationNumber(
+                                request.registrationNumber().trim()
+                        )
+                        .firstName(
+                                request.firstName().trim()
+                        )
+                        .lastName(
+                                request.lastName().trim()
+                        )
+                        .gender(request.gender())
+                        .dateOfBirth(request.dateOfBirth())
+                        .placeOfBirth(request.placeOfBirth())
+                        .nationality(
+                                request.nationality() == null
+                                        || request.nationality().isBlank()
+                                        ? "Senegalaise"
+                                        : request.nationality().trim()
+                        )
+                        .phone(request.phone())
+                        .email(request.email())
+                        .address(request.address())
+                        .guardianName(request.guardianName())
+                        .guardianPhone(request.guardianPhone())
+                        .guardianEmail(request.guardianEmail())
+                        .status(StudentStatus.ACTIVE)
+                        .build();
+
+        return toResponse(
+                studentRepository.save(student)
+        );
+    }
+
+
+    @Transactional(readOnly = true)
+    public Page<StudentResponse> findAll(
+            Pageable pageable
+    ) {
+
+        return studentRepository
+                .findAll(pageable)
+                .map(this::toResponse);
+    }
+
+
+    @Transactional(readOnly = true)
+    public StudentResponse findById(
+            UUID id
+    ) {
+
+        return toResponse(
+                getStudent(id)
+        );
+    }
+
+
+    @Transactional(readOnly = true)
+    public Page<StudentResponse> search(
+            String q,
+            Pageable pageable
+    ) {
+
+        if (q == null || q.isBlank()) {
+            return findAll(pageable);
+        }
+
+        return studentRepository
+                .search(q.trim(), pageable)
+                .map(this::toResponse);
+    }
+
+
+    @Transactional
+    public StudentResponse update(
+            UUID id,
+            StudentUpdateRequest request
+    ) {
+
+        Student student = getStudent(id);
+
+        student.setFirstName(
+                request.firstName().trim()
+        );
+
+        student.setLastName(
+                request.lastName().trim()
+        );
+
+        student.setGender(request.gender());
+
+        student.setDateOfBirth(
+                request.dateOfBirth()
+        );
+
+        student.setPlaceOfBirth(
+                request.placeOfBirth()
+        );
+
+        student.setNationality(
+                request.nationality()
+        );
+
+        student.setPhone(
+                request.phone()
+        );
+
+        student.setEmail(
+                request.email()
+        );
+
+        student.setAddress(
+                request.address()
+        );
+
+        student.setGuardianName(
+                request.guardianName()
+        );
+
+        student.setGuardianPhone(
+                request.guardianPhone()
+        );
+
+        student.setGuardianEmail(
+                request.guardianEmail()
+        );
+
+        student.setStatus(
+                request.status()
+        );
+
+        return toResponse(
+                studentRepository.save(student)
+        );
+    }
+
+
+    @Transactional
+    public EnrollmentResponse enroll(
+            UUID studentId,
+            EnrollmentRequest request
+    ) {
+
+        Student student =
+                getStudent(studentId);
+
+        AcademicYear academicYear =
+                academicYearRepository
+                        .findById(request.academicYearId())
+                        .orElseThrow(() ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Annee academique introuvable."
+                                )
+                        );
+
+        SchoolClass schoolClass =
+                schoolClassRepository
+                        .findById(request.schoolClassId())
+                        .orElseThrow(() ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Classe introuvable."
+                                )
+                        );
+
+        if (!student.getEstablishment().getId()
+                .equals(academicYear.getEstablishment().getId())) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "L'annee academique ne correspond pas a l'etablissement de l'eleve."
+            );
+        }
+
+        if (!student.getEstablishment().getId()
+                .equals(schoolClass.getEstablishment().getId())) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "La classe ne correspond pas a l'etablissement de l'eleve."
+            );
+        }
+
+        if (!schoolClass.getAcademicYear().getId()
+                .equals(academicYear.getId())) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "La classe ne correspond pas a l'annee academique selectionnee."
+            );
+        }
+
+        if (enrollmentRepository
+                .existsByStudentIdAndAcademicYearId(
+                        studentId,
+                        academicYear.getId()
+                )) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "L'eleve est deja inscrit pour cette annee academique."
+            );
+        }
+
+        Enrollment enrollment =
+                Enrollment.builder()
+                        .student(student)
+                        .academicYear(academicYear)
+                        .schoolClass(schoolClass)
+                        .enrollmentDate(
+                                request.enrollmentDate() == null
+                                        ? LocalDate.now()
+                                        : request.enrollmentDate()
+                        )
+                        .status(
+                                EnrollmentStatus.ACTIVE
+                        )
+                        .notes(
+                                request.notes()
+                        )
+                        .build();
+
+        return toEnrollmentResponse(
+                enrollmentRepository.save(enrollment)
+        );
+    }
+
+
+    @Transactional(readOnly = true)
+    public List<EnrollmentResponse> getEnrollments(
+            UUID studentId
+    ) {
+
+        getStudent(studentId);
+
+        return enrollmentRepository
+                .findByStudentIdOrderByEnrollmentDateDesc(
+                        studentId
+                )
+                .stream()
+                .map(this::toEnrollmentResponse)
+                .toList();
+    }
+
+
+    private Student getStudent(
+            UUID id
+    ) {
+
+        return studentRepository
+                .findById(id)
+                .orElseThrow(() ->
+                        new ResponseStatusException(
+                                HttpStatus.NOT_FOUND,
+                                "Eleve introuvable."
+                        )
+                );
+    }
+
+
+    private StudentResponse toResponse(
+            Student student
+    ) {
+
+        return new StudentResponse(
+                student.getId(),
+                student.getEstablishment().getId(),
+                student.getEstablishment().getName(),
+                student.getRegistrationNumber(),
+                student.getFirstName(),
+                student.getLastName(),
+                student.getGender(),
+                student.getDateOfBirth(),
+                student.getPlaceOfBirth(),
+                student.getNationality(),
+                student.getPhone(),
+                student.getEmail(),
+                student.getAddress(),
+                student.getGuardianName(),
+                student.getGuardianPhone(),
+                student.getGuardianEmail(),
+                student.getStatus(),
+                student.getCreatedAt(),
+                student.getUpdatedAt()
+        );
+    }
+
+
+    private EnrollmentResponse toEnrollmentResponse(
+            Enrollment enrollment
+    ) {
+
+        return new EnrollmentResponse(
+                enrollment.getId(),
+                enrollment.getStudent().getId(),
+                enrollment.getStudent().getRegistrationNumber(),
+                enrollment.getAcademicYear().getId(),
+                enrollment.getAcademicYear().getLabel(),
+                enrollment.getSchoolClass().getId(),
+                enrollment.getSchoolClass().getName(),
+                enrollment.getSchoolClass().getLevel().getName(),
+                enrollment.getEnrollmentDate(),
+                enrollment.getStatus(),
+                enrollment.getNotes()
+        );
+    }
+}
