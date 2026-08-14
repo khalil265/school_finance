@@ -116,29 +116,4 @@ public interface AccountingEntryLineRepository
             @Param("toDate")
             LocalDateTime toDate
     );
-
-    @Query("""
-            select l
-            from AccountingEntryLine l
-            join fetch l.accountingEntry e
-            where e.establishment.id = :establishmentId
-              and upper(l.accountCode) = upper(:accountCode)
-              and e.status = com.schoolfinance.enums.AccountingEntryStatus.POSTED
-              and e.entryDate >= :fromDate
-              and e.entryDate <= :toDate
-            order by e.entryDate asc, e.entryNumber asc
-            """)
-    List<AccountingEntryLine> findBankReconciliationCandidates(
-            @Param("establishmentId")
-            UUID establishmentId,
-
-            @Param("accountCode")
-            String accountCode,
-
-            @Param("fromDate")
-            LocalDateTime fromDate,
-
-            @Param("toDate")
-            LocalDateTime toDate
-    );
 }

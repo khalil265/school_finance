@@ -1,0 +1,2752 @@
+
+============================================================
+FILE: src\main\java\com\schoolfinance\service\PaymentService.java
+============================================================
+package com.schoolfinance.service;
+
+import com.schoolfinance.dto.finance.*;
+import com.schoolfinance.entity.finance.*;
+import com.schoolfinance.entity.accounting.AccountingAccount;
+import com.schoolfinance.entity.accounting.AccountingEntry;
+import com.schoolfinance.entity.accounting.AccountingEntryLine;
+import com.schoolfinance.entity.accounting.AccountingJournal;
+import com.schoolfinance.enums.AccountingAccountType;
+import com.schoolfinance.enums.AccountingDirection;
+import com.schoolfinance.enums.AccountingEntryStatus;
+import com.schoolfinance.enums.ChargeStatus;
+import com.schoolfinance.enums.PaymentMethod;
+import com.schoolfinance.enums.PaymentStatus;
+import com.schoolfinance.enums.StudentAccountStatus;
+import com.schoolfinance.repository.finance.*;
+import com.schoolfinance.repository.accounting.AccountingEntryRepository;
+import com.schoolfinance.repository.accounting.AccountingEntryLineRepository;
+import com.schoolfinance.repository.accounting.AccountingJournalRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.List;
+import java.util.Map;
+import java.util.LinkedHashMap;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+public class PaymentService {
+
+    private final StudentAccountRepository studentAccountRepository;
+
+    private final StudentChargeRepository studentChargeRepository;
+
+    private final PaymentRepository paymentRepository;
+
+    private final PaymentAllocationRepository allocationRepository;
+
+    private final ReceiptRepository receiptRepository;
+
+    private final AccountingJournalRepository journalRepository;
+
+    private final AccountingEntryRepository accountingEntryRepository;
+
+    private final AccountingEntryLineRepository accountingLineRepository;
+
+    private final AccountingAccountValidationService accountValidationService;
+
+    private final AuditService auditService;
+
+
+    @Transactional
+    public PaymentResponse createPayment(
+            PaymentRequest request
+    ) {
+
+        StudentAccount account =
+                studentAccountRepository
+                        .findByStudentIdAndAcademicYearId(
+                                request.studentId(),
+                                request.academicYearId()
+                        )
+                        .orElseThrow(() ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Compte financier eleve introuvable. Generez d'abord l'echeancier."
+                                )
+                        );
+
+
+        recalculateAccount(account);
+
+
+        if (request.amount().compareTo(
+                BigDecimal.ZERO
+        ) <= 0) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Le montant du paiement doit etre superieur a zero."
+            );
+        }
+
+
+        if (request.amount().compareTo(
+                account.getBalance()
+        ) > 0) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Le montant du paiement depasse le solde restant de l'eleve."
+            );
+        }
+
+
+        validatePaymentReference(
+                request
+        );
+
+
+        String username =
+                currentUsername();
+
+
+        Payment payment =
+                Payment.builder()
+                        .studentAccount(account)
+                        .paymentNumber(
+                                generatePaymentNumber()
+                        )
+                        .amount(
+                                request.amount()
+                        )
+                        .paymentMethod(
+                                request.paymentMethod()
+                        )
+                        .status(
+                                PaymentStatus.COMPLETED
+                        )
+                        .transactionReference(
+                                clean(
+                                        request.transactionReference()
+                                )
+                        )
+                        .notes(
+                                request.notes()
+                        )
+                        .paidAt(
+                                LocalDateTime.now()
+                        )
+                        .receivedBy(
+                                username
+                        )
+                        .active(true)
+                        .build();
+
+
+        payment =
+                paymentRepository.save(
+                        payment
+                );
+
+
+        BigDecimal remainingPayment =
+                request.amount();
+
+
+        List<StudentCharge> charges =
+                studentChargeRepository
+                        .findByStudentAccountIdAndActiveTrueOrderByDueDateAscInstallmentNumberAsc(
+                                account.getId()
+                        )
+                        .stream()
+                        .filter(c ->
+                                c.getStatus()
+                                        != ChargeStatus.CANCELLED
+                        )
+                        .sorted(
+                                Comparator
+                                        .comparing(
+                                                StudentCharge::getDueDate,
+                                                Comparator.nullsLast(
+                                                        Comparator.naturalOrder()
+                                                )
+                                        )
+                                        .thenComparing(
+                                                StudentCharge::getInstallmentNumber
+                                        )
+                        )
+                        .toList();
+
+
+        List<PaymentAllocation> allocations =
+                new ArrayList<>();
+
+
+        for (StudentCharge charge : charges) {
+
+            if (remainingPayment.compareTo(
+                    BigDecimal.ZERO
+            ) <= 0) {
+                break;
+            }
+
+
+            BigDecimal outstanding =
+                    charge.getAmount()
+                            .subtract(
+                                    charge.getPaidAmount()
+                            )
+                            .subtract(
+                                    charge.getDiscountAmount()
+                            );
+
+
+            if (outstanding.compareTo(
+                    BigDecimal.ZERO
+            ) <= 0) {
+                continue;
+            }
+
+
+            BigDecimal allocated =
+                    remainingPayment.min(
+                            outstanding
+                    );
+
+
+            charge.setPaidAmount(
+                    charge.getPaidAmount()
+                            .add(allocated)
+            );
+
+
+            updateChargeStatus(
+                    charge
+            );
+
+
+            studentChargeRepository.save(
+                    charge
+            );
+
+
+            PaymentAllocation allocation =
+                    PaymentAllocation.builder()
+                            .payment(payment)
+                            .studentCharge(charge)
+                            .allocatedAmount(
+                                    allocated
+                            )
+                            .build();
+
+
+            allocation =
+                    allocationRepository.save(
+                            allocation
+                    );
+
+
+            allocations.add(
+                    allocation
+            );
+
+
+            remainingPayment =
+                    remainingPayment.subtract(
+                            allocated
+                    );
+        }
+
+
+        if (remainingPayment.compareTo(
+                BigDecimal.ZERO
+        ) != 0) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Le paiement n'a pas pu etre totalement affecte aux echeances."
+            );
+        }
+
+
+        recalculateAccount(
+                account
+        );
+
+
+        Receipt receipt =
+                Receipt.builder()
+                        .payment(payment)
+                        .receiptNumber(
+                                generateReceiptNumber()
+                        )
+                        .verificationCode(
+                                UUID.randomUUID()
+                        )
+                        .amount(
+                                payment.getAmount()
+                        )
+                        .issuedAt(
+                                LocalDateTime.now()
+                        )
+                        .cancelled(false)
+                        .build();
+
+
+        receipt =
+                receiptRepository.save(
+                        receipt
+                );
+
+
+        postStudentPaymentAccounting(
+                payment,
+                allocations,
+                username
+        );
+
+
+        return toPaymentResponse(
+                payment,
+                allocations,
+                receipt
+        );
+    }
+
+
+    @Transactional(readOnly = true)
+    public PaymentResponse getPayment(
+            UUID paymentId
+    ) {
+
+        Payment payment =
+                paymentRepository
+                        .findById(paymentId)
+                        .orElseThrow(() ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Paiement introuvable."
+                                )
+                        );
+
+
+        List<PaymentAllocation> allocations =
+                allocationRepository
+                        .findByPaymentIdOrderByCreatedAtAsc(
+                                paymentId
+                        );
+
+
+        Receipt receipt =
+                receiptRepository
+                        .findByPaymentId(
+                                paymentId
+                        )
+                        .orElse(null);
+
+
+        return toPaymentResponse(
+                payment,
+                allocations,
+                receipt
+        );
+    }
+
+
+    @Transactional(readOnly = true)
+    public List<PaymentResponse> getStudentPayments(
+            UUID studentId,
+            UUID academicYearId
+    ) {
+
+        return paymentRepository
+                .findByStudentAccountStudentIdAndStudentAccountAcademicYearIdOrderByPaidAtDesc(
+                        studentId,
+                        academicYearId
+                )
+                .stream()
+                .map(payment -> {
+
+                    List<PaymentAllocation> allocations =
+                            allocationRepository
+                                    .findByPaymentIdOrderByCreatedAtAsc(
+                                            payment.getId()
+                                    );
+
+
+                    Receipt receipt =
+                            receiptRepository
+                                    .findByPaymentId(
+                                            payment.getId()
+                                    )
+                                    .orElse(null);
+
+
+                    return toPaymentResponse(
+                            payment,
+                            allocations,
+                            receipt
+                    );
+                })
+                .toList();
+    }
+
+
+    @Transactional(readOnly = true)
+    public ReceiptResponse getReceipt(
+            UUID receiptId
+    ) {
+
+        Receipt receipt =
+                receiptRepository
+                        .findById(receiptId)
+                        .orElseThrow(() ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Recu introuvable."
+                                )
+                        );
+
+
+        return toReceiptResponse(
+                receipt
+        );
+    }
+
+
+    private void validatePaymentReference(
+            PaymentRequest request
+    ) {
+
+        if (request.paymentMethod()
+                == PaymentMethod.CASH) {
+            return;
+        }
+
+
+        if (
+                request.transactionReference() == null
+                || request.transactionReference().isBlank()
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "Une reference de transaction est obligatoire pour ce mode de paiement."
+            );
+        }
+    }
+
+
+    private void updateChargeStatus(
+            StudentCharge charge
+    ) {
+
+        BigDecimal remaining =
+                charge.getAmount()
+                        .subtract(
+                                charge.getPaidAmount()
+                        )
+                        .subtract(
+                                charge.getDiscountAmount()
+                        );
+
+
+        if (remaining.signum() < 0) {
+            remaining = BigDecimal.ZERO;
+        }
+
+
+        charge.setRemainingAmount(
+                remaining
+        );
+
+
+        if (remaining.compareTo(
+                BigDecimal.ZERO
+        ) == 0) {
+
+            charge.setStatus(
+                    ChargeStatus.PAID
+            );
+
+        }
+        else if (
+                charge.getPaidAmount()
+                        .compareTo(BigDecimal.ZERO) > 0
+        ) {
+
+            charge.setStatus(
+                    ChargeStatus.PARTIALLY_PAID
+            );
+
+        }
+        else if (
+                charge.getDueDate() != null
+                && LocalDate.now().isAfter(
+                        charge.getDueDate()
+                                .plusDays(
+                                        charge.getGracePeriodDays()
+                                )
+                )
+        ) {
+
+            charge.setStatus(
+                    ChargeStatus.OVERDUE
+            );
+
+        }
+        else {
+
+            charge.setStatus(
+                    ChargeStatus.PENDING
+            );
+        }
+    }
+
+
+    private void recalculateAccount(
+            StudentAccount account
+    ) {
+
+        List<StudentCharge> charges =
+                studentChargeRepository
+                        .findByStudentAccountIdAndActiveTrueOrderByDueDateAscInstallmentNumberAsc(
+                                account.getId()
+                        );
+
+
+        BigDecimal totalCharged =
+                BigDecimal.ZERO;
+
+        BigDecimal totalPaid =
+                BigDecimal.ZERO;
+
+        BigDecimal totalDiscount =
+                BigDecimal.ZERO;
+
+
+        long overdueCount = 0;
+
+
+        for (StudentCharge charge : charges) {
+
+            if (
+                    charge.getStatus()
+                            == ChargeStatus.CANCELLED
+            ) {
+                continue;
+            }
+
+
+            updateChargeStatus(
+                    charge
+            );
+
+
+            totalCharged =
+                    totalCharged.add(
+                            charge.getAmount()
+                    );
+
+            totalPaid =
+                    totalPaid.add(
+                            charge.getPaidAmount()
+                    );
+
+            totalDiscount =
+                    totalDiscount.add(
+                            charge.getDiscountAmount()
+                    );
+
+
+            if (
+                    charge.getStatus()
+                            == ChargeStatus.OVERDUE
+            ) {
+                overdueCount++;
+            }
+        }
+
+
+        studentChargeRepository.saveAll(
+                charges
+        );
+
+
+        BigDecimal balance =
+                totalCharged
+                        .subtract(totalPaid)
+                        .subtract(totalDiscount);
+
+
+        if (balance.signum() < 0) {
+            balance = BigDecimal.ZERO;
+        }
+
+
+        StudentAccountStatus status;
+
+
+        if (balance.compareTo(
+                BigDecimal.ZERO
+        ) == 0) {
+
+            status =
+                    StudentAccountStatus.SETTLED;
+
+        }
+        else if (overdueCount > 0) {
+
+            status =
+                    StudentAccountStatus.OVERDUE;
+
+        }
+        else if (
+                totalPaid.compareTo(
+                        BigDecimal.ZERO
+                ) > 0
+        ) {
+
+            status =
+                    StudentAccountStatus.PARTIAL;
+
+        }
+        else {
+
+            status =
+                    StudentAccountStatus.UP_TO_DATE;
+        }
+
+
+        account.setTotalCharged(
+                totalCharged
+        );
+
+        account.setTotalPaid(
+                totalPaid
+        );
+
+        account.setTotalDiscount(
+                totalDiscount
+        );
+
+        account.setBalance(
+                balance
+        );
+
+        account.setStatus(
+                status
+        );
+
+
+        studentAccountRepository.save(
+                account
+        );
+    }
+
+
+    private PaymentResponse toPaymentResponse(
+            Payment payment,
+            List<PaymentAllocation> allocations,
+            Receipt receipt
+    ) {
+
+        List<PaymentAllocationResponse>
+                allocationResponses =
+                allocations.stream()
+                        .map(this::toAllocationResponse)
+                        .toList();
+
+
+        ReceiptResponse receiptResponse =
+                receipt == null
+                        ? null
+                        : toReceiptResponse(
+                                receipt
+                        );
+
+
+        StudentAccount account =
+                payment.getStudentAccount();
+
+
+        return new PaymentResponse(
+                payment.getId(),
+                payment.getPaymentNumber(),
+                account.getStudent().getId(),
+                account.getStudent().getRegistrationNumber(),
+                account.getStudent().getFirstName()
+                        + " "
+                        + account.getStudent().getLastName(),
+                account.getAcademicYear().getId(),
+                payment.getAmount(),
+                payment.getPaymentMethod(),
+                payment.getStatus(),
+                payment.getTransactionReference(),
+                payment.getNotes(),
+                payment.getPaidAt(),
+                payment.getReceivedBy(),
+                account.getBalance(),
+                allocationResponses,
+                receiptResponse
+        );
+    }
+
+
+    private PaymentAllocationResponse toAllocationResponse(
+            PaymentAllocation allocation
+    ) {
+
+        StudentCharge charge =
+                allocation.getStudentCharge();
+
+
+        return new PaymentAllocationResponse(
+                allocation.getId(),
+                charge.getId(),
+                charge.getFeeStructure()
+                        .getFeeType()
+                        .getCode(),
+                charge.getLabel(),
+                charge.getDueDate(),
+                allocation.getAllocatedAmount(),
+                charge.getRemainingAmount()
+        );
+    }
+
+
+    private ReceiptResponse toReceiptResponse(
+            Receipt receipt
+    ) {
+
+        return new ReceiptResponse(
+                receipt.getId(),
+                receipt.getReceiptNumber(),
+                receipt.getVerificationCode(),
+                receipt.getAmount(),
+                receipt.getIssuedAt(),
+                receipt.getCancelled()
+        );
+    }
+
+
+    // ============================================================
+    // COMPTABILISATION AUTOMATIQUE DES ENCAISSEMENTS ELEVES
+    // ============================================================
+
+    private void postStudentPaymentAccounting(
+            Payment payment,
+            List<PaymentAllocation> allocations,
+            String username
+    ) {
+
+        StudentAccount studentAccount =
+                payment.getStudentAccount();
+
+
+        UUID establishmentId =
+                studentAccount
+                        .getAcademicYear()
+                        .getEstablishment()
+                        .getId();
+
+
+        // --------------------------------------------------------
+        // 1. COMPTE DE TRESORERIE
+        // --------------------------------------------------------
+
+        String treasuryCode =
+                payment.getPaymentMethod()
+                        == PaymentMethod.CASH
+                        ? "571000"
+                        : "521100";
+
+
+        AccountingAccount treasuryAccount =
+                accountValidationService
+                        .requirePostingAccount(
+                                establishmentId,
+                                treasuryCode,
+                                AccountingAccountType.ASSET
+                        );
+
+
+        // --------------------------------------------------------
+        // 2. AGREGER LES PRODUITS PAR COMPTE
+        // --------------------------------------------------------
+
+        Map<String, BigDecimal> revenueAmounts =
+                new LinkedHashMap<>();
+
+
+        for (PaymentAllocation allocation : allocations) {
+
+            String feeTypeCode =
+                    allocation
+                            .getStudentCharge()
+                            .getFeeStructure()
+                            .getFeeType()
+                            .getCode();
+
+
+            String revenueAccountCode =
+                    resolveRevenueAccountCode(
+                            feeTypeCode
+                    );
+
+
+            revenueAmounts.merge(
+                    revenueAccountCode,
+                    allocation.getAllocatedAmount(),
+                    BigDecimal::add
+            );
+        }
+
+
+        // --------------------------------------------------------
+        // 3. CONTROLER TOTAL CREDITS
+        // --------------------------------------------------------
+
+        BigDecimal totalCredits =
+                revenueAmounts
+                        .values()
+                        .stream()
+                        .reduce(
+                                BigDecimal.ZERO,
+                                BigDecimal::add
+                        );
+
+
+        if (
+                totalCredits.compareTo(
+                        payment.getAmount()
+                ) != 0
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Ecriture comptable impossible : le total des allocations ne correspond pas au paiement."
+            );
+        }
+
+
+        // --------------------------------------------------------
+        // 4. JOURNAL RECETTES
+        // --------------------------------------------------------
+
+        AccountingJournal journal =
+                getOrCreateRevenueJournal(
+                        studentAccount
+                );
+
+
+        LocalDateTime now =
+                LocalDateTime.now();
+
+
+        // --------------------------------------------------------
+        // 5. ENTETE ECRITURE
+        // --------------------------------------------------------
+
+        AccountingEntry entry =
+                AccountingEntry.builder()
+                        .establishment(
+                                studentAccount
+                                        .getAcademicYear()
+                                        .getEstablishment()
+                        )
+                        .academicYear(
+                                studentAccount
+                                        .getAcademicYear()
+                        )
+                        .journal(journal)
+                        .studentPayment(payment)
+                        .entryNumber(
+                                generateAccountingEntryNumber()
+                        )
+                        .entryDate(now)
+                        .description(
+                                "Encaissement "
+                                        + payment.getPaymentNumber()
+                                        + " - Eleve "
+                                        + studentAccount
+                                                .getStudent()
+                                                .getRegistrationNumber()
+                        )
+                        .totalDebit(
+                                payment.getAmount()
+                        )
+                        .totalCredit(
+                                payment.getAmount()
+                        )
+                        .status(
+                                AccountingEntryStatus.POSTED
+                        )
+                        .postedBy(username)
+                        .postedAt(now)
+                        .build();
+
+
+        entry =
+                accountingEntryRepository.save(
+                        entry
+                );
+
+
+        List<AccountingEntryLine> lines =
+                new ArrayList<>();
+
+
+        // --------------------------------------------------------
+        // 6. DEBIT TRESORERIE
+        // --------------------------------------------------------
+
+        AccountingEntryLine debit =
+                AccountingEntryLine.builder()
+                        .accountingEntry(entry)
+                        .lineNumber(1)
+                        .accountCode(
+                                treasuryAccount.getCode()
+                        )
+                        .accountName(
+                                treasuryAccount.getName()
+                        )
+                        .direction(
+                                AccountingDirection.DEBIT
+                        )
+                        .amount(
+                                payment.getAmount()
+                        )
+                        .description(
+                                "Encaissement "
+                                        + payment.getPaymentNumber()
+                        )
+                        .build();
+
+
+        lines.add(debit);
+
+
+        // --------------------------------------------------------
+        // 7. CREDITS PRODUITS
+        // --------------------------------------------------------
+
+        int lineNumber = 2;
+
+
+        for (
+                Map.Entry<String, BigDecimal>
+                        revenueItem
+                : revenueAmounts.entrySet()
+        ) {
+
+            AccountingAccount revenueAccount =
+                    accountValidationService
+                            .requirePostingAccount(
+                                    establishmentId,
+                                    revenueItem.getKey(),
+                                    AccountingAccountType.REVENUE
+                            );
+
+
+            AccountingEntryLine credit =
+                    AccountingEntryLine.builder()
+                            .accountingEntry(entry)
+                            .lineNumber(
+                                    lineNumber++
+                            )
+                            .accountCode(
+                                    revenueAccount.getCode()
+                            )
+                            .accountName(
+                                    revenueAccount.getName()
+                            )
+                            .direction(
+                                    AccountingDirection.CREDIT
+                            )
+                            .amount(
+                                    revenueItem.getValue()
+                            )
+                            .description(
+                                    "Produit scolaire - "
+                                            + revenueAccount.getName()
+                            )
+                            .build();
+
+
+            lines.add(credit);
+        }
+
+
+        accountingLineRepository.saveAll(
+                lines
+        );
+
+
+        // --------------------------------------------------------
+        // 8. AUDIT
+        // --------------------------------------------------------
+
+        auditService.log(
+                "STUDENT_PAYMENT_ACCOUNTING_POSTED",
+                "AccountingEntry",
+                entry.getId(),
+                null,
+                entry.getEntryNumber()
+        );
+    }
+
+
+    private AccountingJournal getOrCreateRevenueJournal(
+            StudentAccount studentAccount
+    ) {
+
+        UUID establishmentId =
+                studentAccount
+                        .getAcademicYear()
+                        .getEstablishment()
+                        .getId();
+
+
+        return journalRepository
+                .findByEstablishmentIdAndCode(
+                        establishmentId,
+                        "RECETTES"
+                )
+                .orElseGet(() -> {
+
+                    AccountingJournal journal =
+                            AccountingJournal.builder()
+                                    .establishment(
+                                            studentAccount
+                                                    .getAcademicYear()
+                                                    .getEstablishment()
+                                    )
+                                    .code("RECETTES")
+                                    .name(
+                                            "Journal des recettes scolaires"
+                                    )
+                                    .active(true)
+                                    .build();
+
+
+                    return journalRepository.save(
+                            journal
+                    );
+                });
+    }
+
+
+    private String resolveRevenueAccountCode(
+            String feeTypeCode
+    ) {
+
+        if (
+                feeTypeCode == null
+                || feeTypeCode.isBlank()
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Type de frais absent : comptabilisation impossible."
+            );
+        }
+
+
+        String code =
+                feeTypeCode
+                        .trim()
+                        .toUpperCase();
+
+
+        return switch (code) {
+
+            case "SCOLARITE",
+                 "SCOLARITY",
+                 "TUITION" ->
+                    "706100";
+
+            case "INSCRIPTION",
+                 "REGISTRATION" ->
+                    "706200";
+
+            case "CANTINE",
+                 "CANTEEN" ->
+                    "706300";
+
+            case "TRANSPORT" ->
+                    "706400";
+
+            default ->
+                    throw new ResponseStatusException(
+                            HttpStatus.CONFLICT,
+                            "Aucun compte de produit configure pour le type de frais : "
+                                    + feeTypeCode
+                    );
+        };
+    }
+
+
+    private String generateAccountingEntryNumber() {
+
+        String date =
+                LocalDate.now()
+                        .format(
+                                DateTimeFormatter.BASIC_ISO_DATE
+                        );
+
+
+        String random =
+                UUID.randomUUID()
+                        .toString()
+                        .replace("-", "")
+                        .substring(0, 10)
+                        .toUpperCase();
+
+
+        return "ACC-"
+                + date
+                + "-"
+                + random;
+    }
+
+    private String currentUsername() {
+
+        Authentication authentication =
+                SecurityContextHolder
+                        .getContext()
+                        .getAuthentication();
+
+
+        if (
+                authentication == null
+                || authentication.getName() == null
+        ) {
+            return "SYSTEM";
+        }
+
+
+        return authentication.getName();
+    }
+
+
+    private String generatePaymentNumber() {
+
+        String date =
+                LocalDate.now()
+                        .format(
+                                DateTimeFormatter.BASIC_ISO_DATE
+                        );
+
+
+        String random =
+                UUID.randomUUID()
+                        .toString()
+                        .replace("-", "")
+                        .substring(0, 12)
+                        .toUpperCase();
+
+
+        return "PAY-" + date + "-" + random;
+    }
+
+
+    private String generateReceiptNumber() {
+
+        String date =
+                LocalDate.now()
+                        .format(
+                                DateTimeFormatter.BASIC_ISO_DATE
+                        );
+
+
+        String random =
+                UUID.randomUUID()
+                        .toString()
+                        .replace("-", "")
+                        .substring(0, 12)
+                        .toUpperCase();
+
+
+        return "REC-" + date + "-" + random;
+    }
+
+
+    private String clean(
+            String value
+    ) {
+
+        if (value == null) {
+            return null;
+        }
+
+        String cleaned =
+                value.trim();
+
+        return cleaned.isEmpty()
+                ? null
+                : cleaned;
+    }
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\finance\Payment.java
+============================================================
+package com.schoolfinance.entity.finance;
+
+import com.schoolfinance.entity.base.BaseEntity;
+import com.schoolfinance.enums.PaymentMethod;
+import com.schoolfinance.enums.PaymentStatus;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "payments",
+        schema = "school_finance",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uq_payment_number",
+                        columnNames = "payment_number"
+                )
+        },
+        indexes = {
+                @Index(
+                        name = "idx_payment_account",
+                        columnList = "student_account_id"
+                ),
+                @Index(
+                        name = "idx_payment_paid_at",
+                        columnList = "paid_at"
+                ),
+                @Index(
+                        name = "idx_payment_method",
+                        columnList = "payment_method"
+                ),
+                @Index(
+                        name = "idx_payment_status",
+                        columnList = "status"
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class Payment extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "student_account_id",
+            nullable = false
+    )
+    private StudentAccount studentAccount;
+
+    @Column(
+            name = "payment_number",
+            nullable = false,
+            unique = true,
+            length = 80
+    )
+    private String paymentNumber;
+
+    @Column(
+            name = "amount",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal amount;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "payment_method",
+            nullable = false,
+            length = 30
+    )
+    private PaymentMethod paymentMethod;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "status",
+            nullable = false,
+            length = 30
+    )
+    @Builder.Default
+    private PaymentStatus status = PaymentStatus.COMPLETED;
+
+    @Column(
+            name = "transaction_reference",
+            length = 150
+    )
+    private String transactionReference;
+
+    @Column(
+            name = "notes",
+            columnDefinition = "TEXT"
+    )
+    private String notes;
+
+    @Column(
+            name = "paid_at",
+            nullable = false
+    )
+    private LocalDateTime paidAt;
+
+    @Column(
+            name = "received_by",
+            nullable = false,
+            length = 150
+    )
+    private String receivedBy;
+
+    @Column(
+            name = "active",
+            nullable = false
+    )
+    @Builder.Default
+    private Boolean active = true;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\finance\PaymentAllocation.java
+============================================================
+package com.schoolfinance.entity.finance;
+
+import com.schoolfinance.entity.base.BaseEntity;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "payment_allocations",
+        schema = "school_finance",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uq_payment_charge_allocation",
+                        columnNames = {
+                                "payment_id",
+                                "student_charge_id"
+                        }
+                )
+        },
+        indexes = {
+                @Index(
+                        name = "idx_allocation_payment",
+                        columnList = "payment_id"
+                ),
+                @Index(
+                        name = "idx_allocation_charge",
+                        columnList = "student_charge_id"
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class PaymentAllocation extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "payment_id",
+            nullable = false
+    )
+    private Payment payment;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "student_charge_id",
+            nullable = false
+    )
+    private StudentCharge studentCharge;
+
+    @Column(
+            name = "allocated_amount",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal allocatedAmount;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\finance\StudentCharge.java
+============================================================
+package com.schoolfinance.entity.finance;
+
+import com.schoolfinance.entity.base.BaseEntity;
+import com.schoolfinance.enums.ChargeStatus;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "student_charges",
+        schema = "school_finance",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uq_student_charge_installment",
+                        columnNames = {
+                                "student_account_id",
+                                "fee_structure_id",
+                                "installment_number"
+                        }
+                )
+        },
+        indexes = {
+                @Index(
+                        name = "idx_charge_account",
+                        columnList = "student_account_id"
+                ),
+                @Index(
+                        name = "idx_charge_fee_structure",
+                        columnList = "fee_structure_id"
+                ),
+                @Index(
+                        name = "idx_charge_due_date",
+                        columnList = "due_date"
+                ),
+                @Index(
+                        name = "idx_charge_status",
+                        columnList = "status"
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class StudentCharge extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "student_account_id",
+            nullable = false
+    )
+    private StudentAccount studentAccount;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "fee_structure_id",
+            nullable = false
+    )
+    private FeeStructure feeStructure;
+
+    @Column(
+            name = "installment_number",
+            nullable = false
+    )
+    private Integer installmentNumber;
+
+    @Column(
+            name = "label",
+            nullable = false,
+            length = 200
+    )
+    private String label;
+
+    @Column(
+            name = "amount",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal amount;
+
+    @Column(
+            name = "paid_amount",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    @Builder.Default
+    private BigDecimal paidAmount = BigDecimal.ZERO;
+
+    @Column(
+            name = "discount_amount",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    @Builder.Default
+    private BigDecimal discountAmount = BigDecimal.ZERO;
+
+    @Column(
+            name = "remaining_amount",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal remainingAmount;
+
+    @Column(
+            name = "due_date"
+    )
+    private LocalDate dueDate;
+
+    @Column(
+            name = "grace_period_days",
+            nullable = false
+    )
+    @Builder.Default
+    private Integer gracePeriodDays = 0;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "status",
+            nullable = false,
+            length = 30
+    )
+    @Builder.Default
+    private ChargeStatus status = ChargeStatus.PENDING;
+
+    @Column(
+            name = "active",
+            nullable = false
+    )
+    @Builder.Default
+    private Boolean active = true;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\finance\FeeType.java
+============================================================
+package com.schoolfinance.entity.finance;
+
+import com.schoolfinance.entity.administration.Establishment;
+import com.schoolfinance.entity.base.BaseEntity;
+import com.schoolfinance.enums.FeeCategory;
+import com.schoolfinance.enums.FeeFrequency;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "fee_types",
+        schema = "school_finance",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uq_fee_type_establishment_code",
+                        columnNames = {
+                                "establishment_id",
+                                "code"
+                        }
+                )
+        },
+        indexes = {
+                @Index(
+                        name = "idx_fee_type_establishment",
+                        columnList = "establishment_id"
+                ),
+                @Index(
+                        name = "idx_fee_type_category",
+                        columnList = "category"
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class FeeType extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "establishment_id",
+            nullable = false
+    )
+    private Establishment establishment;
+
+    @Column(
+            name = "code",
+            nullable = false,
+            length = 50
+    )
+    private String code;
+
+    @Column(
+            name = "name",
+            nullable = false,
+            length = 150
+    )
+    private String name;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "category",
+            nullable = false,
+            length = 30
+    )
+    private FeeCategory category;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "frequency",
+            nullable = false,
+            length = 30
+    )
+    private FeeFrequency frequency;
+
+    @Column(
+            name = "description",
+            columnDefinition = "TEXT"
+    )
+    private String description;
+
+    @Column(
+            name = "mandatory",
+            nullable = false
+    )
+    @Builder.Default
+    private Boolean mandatory = true;
+
+    @Column(
+            name = "active",
+            nullable = false
+    )
+    @Builder.Default
+    private Boolean active = true;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\enums\PaymentMethod.java
+============================================================
+package com.schoolfinance.enums;
+
+public enum PaymentMethod {
+
+    CASH,
+    CHECK,
+    BANK_TRANSFER,
+    MOBILE_MONEY
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\accounting\AccountingEntry.java
+============================================================
+package com.schoolfinance.entity.accounting;
+
+import com.schoolfinance.entity.administration.AcademicYear;
+import com.schoolfinance.entity.administration.Establishment;
+import com.schoolfinance.entity.base.BaseEntity;
+import com.schoolfinance.entity.expense.ExpensePayment;
+import com.schoolfinance.entity.finance.Payment;
+import com.schoolfinance.enums.AccountingEntryStatus;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "accounting_entries",
+        schema = "school_finance",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uq_accounting_entry_number",
+                        columnNames = "entry_number"
+                ),
+                @UniqueConstraint(
+                        name = "uq_accounting_entry_student_payment",
+                        columnNames = "student_payment_id"
+                )
+        },
+        indexes = {
+                @Index(
+                        name = "idx_accounting_entry_date",
+                        columnList = "entry_date"
+                ),
+                @Index(
+                        name = "idx_accounting_entry_establishment",
+                        columnList = "establishment_id"
+                ),
+                @Index(
+                        name = "idx_accounting_entry_student_payment",
+                        columnList = "student_payment_id"
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AccountingEntry extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "establishment_id",
+            nullable = false
+    )
+    private Establishment establishment;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "academic_year_id",
+            nullable = false
+    )
+    private AcademicYear academicYear;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "journal_id",
+            nullable = false
+    )
+    private AccountingJournal journal;
+
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(
+            name = "expense_payment_id",
+            unique = true
+    )
+    private ExpensePayment expensePayment;
+
+    /**
+     * Paiement eleve ayant genere l'ecriture.
+     * Distinct du paiement fournisseur.
+     */
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(
+            name = "student_payment_id",
+            unique = true
+    )
+    private Payment studentPayment;
+
+    @Column(
+            name = "entry_number",
+            nullable = false,
+            unique = true,
+            length = 80
+    )
+    private String entryNumber;
+
+    @Column(
+            name = "entry_date",
+            nullable = false
+    )
+    private LocalDateTime entryDate;
+
+    @Column(
+            name = "description",
+            nullable = false,
+            length = 300
+    )
+    private String description;
+
+    @Column(
+            name = "total_debit",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal totalDebit;
+
+    @Column(
+            name = "total_credit",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal totalCredit;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "status",
+            nullable = false,
+            length = 30
+    )
+    private AccountingEntryStatus status;
+
+    @Column(
+            name = "posted_by",
+            nullable = false,
+            length = 150
+    )
+    private String postedBy;
+
+    @Column(
+            name = "posted_at",
+            nullable = false
+    )
+    private LocalDateTime postedAt;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\accounting\AccountingEntryLine.java
+============================================================
+package com.schoolfinance.entity.accounting;
+
+import com.schoolfinance.entity.base.BaseEntity;
+import com.schoolfinance.enums.AccountingDirection;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "accounting_entry_lines",
+        schema = "school_finance",
+        indexes = {
+                @Index(
+                        name = "idx_entry_line_entry",
+                        columnList = "accounting_entry_id"
+                ),
+                @Index(
+                        name = "idx_entry_line_account",
+                        columnList = "account_code"
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AccountingEntryLine extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "accounting_entry_id",
+            nullable = false
+    )
+    private AccountingEntry accountingEntry;
+
+    @Column(
+            name = "line_number",
+            nullable = false
+    )
+    private Integer lineNumber;
+
+    @Column(
+            name = "account_code",
+            nullable = false,
+            length = 80
+    )
+    private String accountCode;
+
+    @Column(
+            name = "account_name",
+            nullable = false,
+            length = 200
+    )
+    private String accountName;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "direction",
+            nullable = false,
+            length = 20
+    )
+    private AccountingDirection direction;
+
+    @Column(
+            name = "amount",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal amount;
+
+    @Column(
+            name = "description",
+            length = 300
+    )
+    private String description;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\accounting\AccountingJournal.java
+============================================================
+package com.schoolfinance.entity.accounting;
+
+import com.schoolfinance.entity.administration.Establishment;
+import com.schoolfinance.entity.base.BaseEntity;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "accounting_journals",
+        schema = "school_finance",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uq_journal_establishment_code",
+                        columnNames = {
+                                "establishment_id",
+                                "code"
+                        }
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AccountingJournal extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "establishment_id",
+            nullable = false
+    )
+    private Establishment establishment;
+
+    @Column(
+            name = "code",
+            nullable = false,
+            length = 50
+    )
+    private String code;
+
+    @Column(
+            name = "name",
+            nullable = false,
+            length = 150
+    )
+    private String name;
+
+    @Column(
+            name = "active",
+            nullable = false
+    )
+    @Builder.Default
+    private Boolean active = true;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\service\ExpensePaymentService.java
+============================================================
+package com.schoolfinance.service;
+
+import com.schoolfinance.dto.accounting.AccountingEntryResponse;
+import com.schoolfinance.dto.accounting.AccountingLineResponse;
+import com.schoolfinance.dto.expense.ExpensePaymentResponse;
+import com.schoolfinance.dto.expense.PayExpenseRequest;
+import com.schoolfinance.entity.accounting.AccountingAccount;
+import com.schoolfinance.entity.accounting.AccountingEntry;
+import com.schoolfinance.entity.accounting.AccountingEntryLine;
+import com.schoolfinance.entity.accounting.AccountingJournal;
+import com.schoolfinance.entity.budget.Budget;
+import com.schoolfinance.entity.budget.BudgetCommitment;
+import com.schoolfinance.entity.budget.BudgetLine;
+import com.schoolfinance.entity.expense.ExpensePayment;
+import com.schoolfinance.entity.expense.ExpenseRequest;
+import com.schoolfinance.entity.treasury.TreasuryTransaction;
+import com.schoolfinance.enums.*;
+import com.schoolfinance.repository.accounting.AccountingEntryLineRepository;
+import com.schoolfinance.repository.accounting.AccountingEntryRepository;
+import com.schoolfinance.repository.accounting.AccountingJournalRepository;
+import com.schoolfinance.repository.budget.BudgetCommitmentRepository;
+import com.schoolfinance.repository.budget.BudgetLineRepository;
+import com.schoolfinance.repository.budget.BudgetRepository;
+import com.schoolfinance.repository.expense.ExpensePaymentRepository;
+import com.schoolfinance.repository.expense.ExpenseRequestRepository;
+import com.schoolfinance.repository.treasury.TreasuryTransactionRepository;
+import lombok.RequiredArgsConstructor;
+import org.springframework.http.HttpStatus;
+import org.springframework.security.core.Authentication;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.stereotype.Service;
+import org.springframework.transaction.annotation.Transactional;
+import org.springframework.web.server.ResponseStatusException;
+
+import java.math.BigDecimal;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
+import java.util.List;
+import java.util.UUID;
+
+@Service
+@RequiredArgsConstructor
+public class ExpensePaymentService {
+
+    private final ExpenseRequestRepository expenseRepository;
+
+    private final ExpensePaymentRepository expensePaymentRepository;
+
+    private final BudgetCommitmentRepository commitmentRepository;
+
+    private final BudgetLineRepository budgetLineRepository;
+
+    private final BudgetRepository budgetRepository;
+
+    private final TreasuryTransactionRepository treasuryRepository;
+
+    private final AccountingJournalRepository journalRepository;
+
+    private final AccountingEntryRepository accountingEntryRepository;
+
+    private final AccountingEntryLineRepository accountingLineRepository;
+
+    private final AuditService auditService;
+
+    private final AccountingAccountValidationService accountValidationService;
+
+
+    @Transactional
+    public ExpensePaymentResponse pay(
+            UUID expenseId,
+            PayExpenseRequest request
+    ) {
+
+        ExpenseRequest expense =
+                expenseRepository
+                        .findByIdForUpdate(expenseId)
+                        .orElseThrow(() ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Depense introuvable."
+                                )
+                        );
+
+
+        if (
+                expense.getStatus()
+                        != ExpenseStatus.APPROVED
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Seule une depense APPROVED peut etre payee."
+            );
+        }
+
+
+        if (
+                expensePaymentRepository
+                        .existsByExpenseRequestId(
+                                expenseId
+                        )
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Cette depense a deja ete payee."
+            );
+        }
+
+
+        validateReference(request);
+
+
+        AccountingAccount expenseAccount =
+                accountValidationService
+                        .requirePostingAccount(
+                                expense.getEstablishment().getId(),
+                                request.expenseAccountCode(),
+                                AccountingAccountType.EXPENSE
+                        );
+
+
+        AccountingAccount treasuryAccount =
+                accountValidationService
+                        .requirePostingAccount(
+                                expense.getEstablishment().getId(),
+                                request.treasuryAccountCode(),
+                                AccountingAccountType.ASSET
+                        );
+
+
+        BudgetCommitment commitment =
+                commitmentRepository
+                        .findByExpenseRequestIdForUpdate(
+                                expenseId
+                        )
+                        .orElseThrow(() ->
+                                new ResponseStatusException(
+                                        HttpStatus.CONFLICT,
+                                        "Aucun engagement budgetaire n'existe pour cette depense."
+                                )
+                        );
+
+
+        if (
+                commitment.getStatus()
+                        != BudgetCommitmentStatus.RESERVED
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "L'engagement budgetaire doit etre RESERVED."
+            );
+        }
+
+
+        BudgetLine budgetLine =
+                commitment.getBudgetLine();
+
+        Budget budget =
+                budgetLine.getBudget();
+
+
+        if (
+                budgetLine.getCommittedAmount()
+                        .compareTo(
+                                expense.getAmount()
+                        ) < 0
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Montant engage insuffisant sur la ligne budgetaire."
+            );
+        }
+
+
+        LocalDateTime now =
+                LocalDateTime.now();
+
+        String username =
+                currentUsername();
+
+
+        ExpensePayment payment =
+                ExpensePayment.builder()
+                        .expenseRequest(expense)
+                        .paymentNumber(
+                                generateNumber(
+                                        "EPAY"
+                                )
+                        )
+                        .amount(
+                                expense.getAmount()
+                        )
+                        .paymentMethod(
+                                request.paymentMethod()
+                        )
+                        .paymentReference(
+                                clean(
+                                        request.paymentReference()
+                                )
+                        )
+                        .paidAt(now)
+                        .paidBy(username)
+                        .notes(
+                                request.notes()
+                        )
+                        .build();
+
+
+        payment =
+                expensePaymentRepository.save(
+                        payment
+                );
+
+
+        budgetLine.setCommittedAmount(
+                budgetLine
+                        .getCommittedAmount()
+                        .subtract(
+                                expense.getAmount()
+                        )
+        );
+
+        budgetLine.setConsumedAmount(
+                budgetLine
+                        .getConsumedAmount()
+                        .add(
+                                expense.getAmount()
+                        )
+        );
+
+
+        budgetLineRepository.save(
+                budgetLine
+        );
+
+
+        commitment.setStatus(
+                BudgetCommitmentStatus.CONSUMED
+        );
+
+        commitment.setConsumedAt(
+                now
+        );
+
+
+        commitmentRepository.save(
+                commitment
+        );
+
+
+        refreshBudgetTotals(
+                budget
+        );
+
+
+        expense.setStatus(
+                ExpenseStatus.PAID
+        );
+
+        expense.setPaidAt(now);
+
+        expense.setPaymentReference(
+                payment.getPaymentNumber()
+        );
+
+
+        expenseRepository.save(
+                expense
+        );
+
+
+        TreasuryTransaction treasury =
+                TreasuryTransaction.builder()
+                        .establishment(
+                                expense.getEstablishment()
+                        )
+                        .expensePayment(
+                                payment
+                        )
+                        .transactionNumber(
+                                generateNumber(
+                                        "TRX"
+                                )
+                        )
+                        .transactionType(
+                                TreasuryTransactionType.EXPENSE
+                        )
+                        .amount(
+                                expense.getAmount()
+                        )
+                        .paymentMethod(
+                                request.paymentMethod()
+                        )
+                        .accountCode(
+                                treasuryAccount.getCode()
+                        )
+                        .externalReference(
+                                clean(
+                                        request.paymentReference()
+                                )
+                        )
+                        .description(
+                                expense.getSubject()
+                        )
+                        .transactionDate(now)
+                        .createdBy(username)
+                        .build();
+
+
+        treasury =
+                treasuryRepository.save(
+                        treasury
+                );
+
+
+        AccountingJournal journal =
+                getOrCreateExpenseJournal(
+                        expense
+                );
+
+
+        AccountingEntry entry =
+                AccountingEntry.builder()
+                        .establishment(
+                                expense.getEstablishment()
+                        )
+                        .academicYear(
+                                budget.getAcademicYear()
+                        )
+                        .journal(journal)
+                        .expensePayment(payment)
+                        .entryNumber(
+                                generateNumber(
+                                        "ACC"
+                                )
+                        )
+                        .entryDate(now)
+                        .description(
+                                "Paiement "
+                                        + expense.getExpenseNumber()
+                                        + " - "
+                                        + expense.getSubject()
+                        )
+                        .totalDebit(
+                                expense.getAmount()
+                        )
+                        .totalCredit(
+                                expense.getAmount()
+                        )
+                        .status(
+                                AccountingEntryStatus.POSTED
+                        )
+                        .postedBy(username)
+                        .postedAt(now)
+                        .build();
+
+
+        entry =
+                accountingEntryRepository.save(
+                        entry
+                );
+
+
+        AccountingEntryLine debit =
+                AccountingEntryLine.builder()
+                        .accountingEntry(entry)
+                        .lineNumber(1)
+                        .accountCode(
+                                expenseAccount.getCode()
+                        )
+                        .accountName(
+                                expenseAccount.getName()
+                        )
+                        .direction(
+                                AccountingDirection.DEBIT
+                        )
+                        .amount(
+                                expense.getAmount()
+                        )
+                        .description(
+                                expense.getSubject()
+                        )
+                        .build();
+
+
+        AccountingEntryLine credit =
+                AccountingEntryLine.builder()
+                        .accountingEntry(entry)
+                        .lineNumber(2)
+                        .accountCode(
+                                treasuryAccount.getCode()
+                        )
+                        .accountName(
+                                treasuryAccount.getName()
+                        )
+                        .direction(
+                                AccountingDirection.CREDIT
+                        )
+                        .amount(
+                                expense.getAmount()
+                        )
+                        .description(
+                                "Reglement fournisseur "
+                                        + (
+                                        expense.getSupplier() == null
+                                                ? ""
+                                                : expense.getSupplier().getName()
+                                )
+                        )
+                        .build();
+
+
+        accountingLineRepository.saveAll(
+                List.of(
+                        debit,
+                        credit
+                )
+        );
+
+
+        auditService.log(
+                "EXPENSE_PAID",
+                "ExpenseRequest",
+                expense.getId(),
+                "APPROVED",
+                "PAID - "
+                        + payment.getPaymentNumber()
+        );
+
+
+        auditService.log(
+                "BUDGET_COMMITMENT_CONSUMED",
+                "BudgetCommitment",
+                commitment.getId(),
+                "RESERVED",
+                "CONSUMED"
+        );
+
+
+        auditService.log(
+                "TREASURY_EXPENSE_CREATED",
+                "TreasuryTransaction",
+                treasury.getId(),
+                null,
+                treasury.getTransactionNumber()
+        );
+
+
+        auditService.log(
+                "ACCOUNTING_ENTRY_POSTED",
+                "AccountingEntry",
+                entry.getId(),
+                null,
+                entry.getEntryNumber()
+        );
+
+
+        return toResponse(
+                payment,
+                commitment,
+                budgetLine,
+                treasury,
+                entry
+        );
+    }
+
+
+    private AccountingJournal getOrCreateExpenseJournal(
+            ExpenseRequest expense
+    ) {
+
+        return journalRepository
+                .findByEstablishmentIdAndCode(
+                        expense
+                                .getEstablishment()
+                                .getId(),
+                        "ACHATS"
+                )
+                .orElseGet(() -> {
+
+                    AccountingJournal journal =
+                            AccountingJournal.builder()
+                                    .establishment(
+                                            expense.getEstablishment()
+                                    )
+                                    .code("ACHATS")
+                                    .name(
+                                            "Journal des achats et depenses"
+                                    )
+                                    .active(true)
+                                    .build();
+
+                    return journalRepository.save(
+                            journal
+                    );
+                });
+    }
+
+
+    private void refreshBudgetTotals(
+            Budget budget
+    ) {
+
+        List<BudgetLine> lines =
+                budgetLineRepository
+                        .findByBudgetIdAndActiveTrueOrderByCodeAsc(
+                                budget.getId()
+                        );
+
+
+        BigDecimal total =
+                lines.stream()
+                        .map(
+                                BudgetLine::getAllocatedAmount
+                        )
+                        .reduce(
+                                BigDecimal.ZERO,
+                                BigDecimal::add
+                        );
+
+
+        BigDecimal committed =
+                lines.stream()
+                        .map(
+                                BudgetLine::getCommittedAmount
+                        )
+                        .reduce(
+                                BigDecimal.ZERO,
+                                BigDecimal::add
+                        );
+
+
+        BigDecimal consumed =
+                lines.stream()
+                        .map(
+                                BudgetLine::getConsumedAmount
+                        )
+                        .reduce(
+                                BigDecimal.ZERO,
+                                BigDecimal::add
+                        );
+
+
+        budget.setTotalAmount(total);
+
+        budget.setTotalCommitted(
+                committed
+        );
+
+        budget.setTotalConsumed(
+                consumed
+        );
+
+
+        budgetRepository.save(
+                budget
+        );
+    }
+
+
+    private ExpensePaymentResponse toResponse(
+            ExpensePayment payment,
+            BudgetCommitment commitment,
+            BudgetLine budgetLine,
+            TreasuryTransaction treasury,
+            AccountingEntry entry
+    ) {
+
+        List<AccountingEntryLine> lines =
+                accountingLineRepository
+                        .findByAccountingEntryIdOrderByLineNumberAsc(
+                                entry.getId()
+                        );
+
+
+        List<AccountingLineResponse>
+                lineResponses =
+                lines.stream()
+                        .map(line ->
+                                new AccountingLineResponse(
+                                        line.getId(),
+                                        line.getLineNumber(),
+                                        line.getAccountCode(),
+                                        line.getAccountName(),
+                                        line.getDirection(),
+                                        line.getAmount()
+                                )
+                        )
+                        .toList();
+
+
+        AccountingEntryResponse
+                accountingResponse =
+                new AccountingEntryResponse(
+                        entry.getId(),
+                        entry.getEntryNumber(),
+                        entry.getJournal().getCode(),
+                        entry.getEntryDate(),
+                        entry.getDescription(),
+                        entry.getTotalDebit(),
+                        entry.getTotalCredit(),
+                        entry.getStatus(),
+                        lineResponses
+                );
+
+
+        ExpenseRequest expense =
+                payment.getExpenseRequest();
+
+
+        return new ExpensePaymentResponse(
+                payment.getId(),
+                payment.getPaymentNumber(),
+                expense.getId(),
+                expense.getExpenseNumber(),
+                expense.getSupplier() == null
+                        ? null
+                        : expense.getSupplier().getName(),
+                payment.getAmount(),
+                payment.getPaymentMethod(),
+                payment.getPaymentReference(),
+                payment.getPaidAt(),
+                payment.getPaidBy(),
+                expense.getStatus(),
+                commitment.getStatus(),
+                budgetLine.getCommittedAmount(),
+                budgetLine.getConsumedAmount(),
+                budgetLine.getAvailableAmount(),
+                treasury.getId(),
+                treasury.getTransactionNumber(),
+                accountingResponse
+        );
+    }
+
+
+    private void validateReference(
+            PayExpenseRequest request
+    ) {
+
+        if (
+                request.paymentMethod()
+                        == PaymentMethod.CASH
+        ) {
+
+            return;
+        }
+
+
+        if (
+                request.paymentReference() == null
+                || request.paymentReference()
+                        .isBlank()
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "La reference de paiement est obligatoire hors paiement en especes."
+            );
+        }
+    }
+
+
+    private String treasuryAccountName(
+            PaymentMethod method
+    ) {
+
+        return method == PaymentMethod.CASH
+                ? "Caisse"
+                : "Banque";
+    }
+
+
+    private String generateNumber(
+            String prefix
+    ) {
+
+        String date =
+                LocalDate.now()
+                        .format(
+                                DateTimeFormatter.BASIC_ISO_DATE
+                        );
+
+
+        String random =
+                UUID.randomUUID()
+                        .toString()
+                        .replace("-", "")
+                        .substring(0, 10)
+                        .toUpperCase();
+
+
+        return prefix
+                + "-"
+                + date
+                + "-"
+                + random;
+    }
+
+
+    private String currentUsername() {
+
+        Authentication authentication =
+                SecurityContextHolder
+                        .getContext()
+                        .getAuthentication();
+
+
+        if (
+                authentication == null
+                || authentication.getName() == null
+        ) {
+
+            return "SYSTEM";
+        }
+
+
+        return authentication.getName();
+    }
+
+
+    private String clean(
+            String value
+    ) {
+
+        if (value == null) {
+            return null;
+        }
+
+        String result =
+                value.trim();
+
+        return result.isEmpty()
+                ? null
+                : result;
+    }
+}

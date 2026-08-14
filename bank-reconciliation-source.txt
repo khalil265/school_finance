@@ -1,0 +1,567 @@
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\treasury\TreasuryTransaction.java
+============================================================
+package com.schoolfinance.entity.treasury;
+
+import com.schoolfinance.entity.administration.Establishment;
+import com.schoolfinance.entity.base.BaseEntity;
+import com.schoolfinance.entity.expense.ExpensePayment;
+import com.schoolfinance.enums.PaymentMethod;
+import com.schoolfinance.enums.TreasuryTransactionType;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "treasury_transactions",
+        schema = "school_finance",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uq_treasury_transaction_number",
+                        columnNames = "transaction_number"
+                )
+        },
+        indexes = {
+                @Index(
+                        name = "idx_treasury_establishment",
+                        columnList = "establishment_id"
+                ),
+                @Index(
+                        name = "idx_treasury_transaction_date",
+                        columnList = "transaction_date"
+                ),
+                @Index(
+                        name = "idx_treasury_type",
+                        columnList = "transaction_type"
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class TreasuryTransaction extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "establishment_id",
+            nullable = false
+    )
+    private Establishment establishment;
+
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(
+            name = "expense_payment_id",
+            unique = true
+    )
+    private ExpensePayment expensePayment;
+
+    @Column(
+            name = "transaction_number",
+            nullable = false,
+            unique = true,
+            length = 80
+    )
+    private String transactionNumber;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "transaction_type",
+            nullable = false,
+            length = 30
+    )
+    private TreasuryTransactionType transactionType;
+
+    @Column(
+            name = "amount",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal amount;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "payment_method",
+            nullable = false,
+            length = 30
+    )
+    private PaymentMethod paymentMethod;
+
+    @Column(
+            name = "account_code",
+            nullable = false,
+            length = 80
+    )
+    private String accountCode;
+
+    @Column(
+            name = "external_reference",
+            length = 150
+    )
+    private String externalReference;
+
+    @Column(
+            name = "description",
+            columnDefinition = "TEXT"
+    )
+    private String description;
+
+    @Column(
+            name = "transaction_date",
+            nullable = false
+    )
+    private LocalDateTime transactionDate;
+
+    @Column(
+            name = "created_by",
+            nullable = false,
+            length = 150
+    )
+    private String createdBy;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\repository\treasury\TreasuryTransactionRepository.java
+============================================================
+package com.schoolfinance.repository.treasury;
+
+import com.schoolfinance.entity.treasury.TreasuryTransaction;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.UUID;
+
+public interface TreasuryTransactionRepository
+        extends JpaRepository<TreasuryTransaction, UUID> {
+
+    List<TreasuryTransaction>
+    findByEstablishmentIdOrderByTransactionDateDesc(
+            UUID establishmentId
+    );
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\enums\TreasuryTransactionType.java
+============================================================
+package com.schoolfinance.enums;
+
+public enum TreasuryTransactionType {
+
+    INCOME,
+
+    EXPENSE
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\accounting\AccountingEntry.java
+============================================================
+package com.schoolfinance.entity.accounting;
+
+import com.schoolfinance.entity.administration.AcademicYear;
+import com.schoolfinance.entity.administration.Establishment;
+import com.schoolfinance.entity.base.BaseEntity;
+import com.schoolfinance.entity.expense.ExpensePayment;
+import com.schoolfinance.entity.finance.Payment;
+import com.schoolfinance.enums.AccountingEntryStatus;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "accounting_entries",
+        schema = "school_finance",
+        uniqueConstraints = {
+                @UniqueConstraint(
+                        name = "uq_accounting_entry_number",
+                        columnNames = "entry_number"
+                ),
+                @UniqueConstraint(
+                        name = "uq_accounting_entry_student_payment",
+                        columnNames = "student_payment_id"
+                )
+        },
+        indexes = {
+                @Index(
+                        name = "idx_accounting_entry_date",
+                        columnList = "entry_date"
+                ),
+                @Index(
+                        name = "idx_accounting_entry_establishment",
+                        columnList = "establishment_id"
+                ),
+                @Index(
+                        name = "idx_accounting_entry_student_payment",
+                        columnList = "student_payment_id"
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AccountingEntry extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "establishment_id",
+            nullable = false
+    )
+    private Establishment establishment;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "academic_year_id",
+            nullable = false
+    )
+    private AcademicYear academicYear;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "journal_id",
+            nullable = false
+    )
+    private AccountingJournal journal;
+
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(
+            name = "expense_payment_id",
+            unique = true
+    )
+    private ExpensePayment expensePayment;
+
+    /**
+     * Paiement eleve ayant genere l'ecriture.
+     * Distinct du paiement fournisseur.
+     */
+    @OneToOne(fetch = FetchType.LAZY)
+    @JoinColumn(
+            name = "student_payment_id",
+            unique = true
+    )
+    private Payment studentPayment;
+
+    @Column(
+            name = "entry_number",
+            nullable = false,
+            unique = true,
+            length = 80
+    )
+    private String entryNumber;
+
+    @Column(
+            name = "entry_date",
+            nullable = false
+    )
+    private LocalDateTime entryDate;
+
+    @Column(
+            name = "description",
+            nullable = false,
+            length = 300
+    )
+    private String description;
+
+    @Column(
+            name = "total_debit",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal totalDebit;
+
+    @Column(
+            name = "total_credit",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal totalCredit;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "status",
+            nullable = false,
+            length = 30
+    )
+    private AccountingEntryStatus status;
+
+    @Column(
+            name = "posted_by",
+            nullable = false,
+            length = 150
+    )
+    private String postedBy;
+
+    @Column(
+            name = "posted_at",
+            nullable = false
+    )
+    private LocalDateTime postedAt;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\entity\accounting\AccountingEntryLine.java
+============================================================
+package com.schoolfinance.entity.accounting;
+
+import com.schoolfinance.entity.base.BaseEntity;
+import com.schoolfinance.enums.AccountingDirection;
+import jakarta.persistence.*;
+import lombok.*;
+
+import java.math.BigDecimal;
+import java.util.UUID;
+
+@Entity
+@Table(
+        name = "accounting_entry_lines",
+        schema = "school_finance",
+        indexes = {
+                @Index(
+                        name = "idx_entry_line_entry",
+                        columnList = "accounting_entry_id"
+                ),
+                @Index(
+                        name = "idx_entry_line_account",
+                        columnList = "account_code"
+                )
+        }
+)
+@Getter
+@Setter
+@NoArgsConstructor
+@AllArgsConstructor
+@Builder
+public class AccountingEntryLine extends BaseEntity {
+
+    @Id
+    @GeneratedValue(strategy = GenerationType.UUID)
+    private UUID id;
+
+    @ManyToOne(
+            fetch = FetchType.LAZY,
+            optional = false
+    )
+    @JoinColumn(
+            name = "accounting_entry_id",
+            nullable = false
+    )
+    private AccountingEntry accountingEntry;
+
+    @Column(
+            name = "line_number",
+            nullable = false
+    )
+    private Integer lineNumber;
+
+    @Column(
+            name = "account_code",
+            nullable = false,
+            length = 80
+    )
+    private String accountCode;
+
+    @Column(
+            name = "account_name",
+            nullable = false,
+            length = 200
+    )
+    private String accountName;
+
+    @Enumerated(EnumType.STRING)
+    @Column(
+            name = "direction",
+            nullable = false,
+            length = 20
+    )
+    private AccountingDirection direction;
+
+    @Column(
+            name = "amount",
+            nullable = false,
+            precision = 19,
+            scale = 2
+    )
+    private BigDecimal amount;
+
+    @Column(
+            name = "description",
+            length = 300
+    )
+    private String description;
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\repository\accounting\AccountingEntryRepository.java
+============================================================
+package com.schoolfinance.repository.accounting;
+
+import com.schoolfinance.entity.accounting.AccountingEntry;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.UUID;
+
+public interface AccountingEntryRepository
+        extends JpaRepository<AccountingEntry, UUID> {
+
+    List<AccountingEntry>
+    findByEstablishmentIdOrderByEntryDateDesc(
+            UUID establishmentId
+    );
+}
+
+============================================================
+FILE: src\main\java\com\schoolfinance\repository\accounting\AccountingEntryLineRepository.java
+============================================================
+package com.schoolfinance.repository.accounting;
+
+import com.schoolfinance.entity.accounting.AccountingEntryLine;
+import org.springframework.data.jpa.repository.JpaRepository;
+import org.springframework.data.jpa.repository.Query;
+import org.springframework.data.repository.query.Param;
+
+import java.time.LocalDateTime;
+import java.util.List;
+import java.util.UUID;
+
+public interface AccountingEntryLineRepository
+        extends JpaRepository<AccountingEntryLine, UUID> {
+
+    List<AccountingEntryLine>
+    findByAccountingEntryIdOrderByLineNumberAsc(
+            UUID accountingEntryId
+    );
+
+
+    // ============================================================
+    // JOURNAL GENERAL - SANS FILTRE DE DATE
+    // ============================================================
+
+    @Query("""
+            select l
+            from AccountingEntryLine l
+            join fetch l.accountingEntry e
+            join fetch e.journal j
+            where e.establishment.id = :establishmentId
+              and e.status = com.schoolfinance.enums.AccountingEntryStatus.POSTED
+            order by e.entryDate asc, e.entryNumber asc, l.lineNumber asc
+            """)
+    List<AccountingEntryLine> findPostedJournalLines(
+            @Param("establishmentId")
+            UUID establishmentId
+    );
+
+
+    // ============================================================
+    // JOURNAL GENERAL - AVEC INTERVALLE DE DATE
+    // ============================================================
+
+    @Query("""
+            select l
+            from AccountingEntryLine l
+            join fetch l.accountingEntry e
+            join fetch e.journal j
+            where e.establishment.id = :establishmentId
+              and e.status = com.schoolfinance.enums.AccountingEntryStatus.POSTED
+              and e.entryDate >= :fromDate
+              and e.entryDate <= :toDate
+            order by e.entryDate asc, e.entryNumber asc, l.lineNumber asc
+            """)
+    List<AccountingEntryLine> findPostedJournalLinesBetween(
+            @Param("establishmentId")
+            UUID establishmentId,
+
+            @Param("fromDate")
+            LocalDateTime fromDate,
+
+            @Param("toDate")
+            LocalDateTime toDate
+    );
+
+
+    // ============================================================
+    // GRAND LIVRE - SANS FILTRE DE DATE
+    // ============================================================
+
+    @Query("""
+            select l
+            from AccountingEntryLine l
+            join fetch l.accountingEntry e
+            join fetch e.journal j
+            where e.establishment.id = :establishmentId
+              and upper(l.accountCode) = upper(:accountCode)
+              and e.status = com.schoolfinance.enums.AccountingEntryStatus.POSTED
+            order by e.entryDate asc, e.entryNumber asc, l.lineNumber asc
+            """)
+    List<AccountingEntryLine> findPostedLedgerLines(
+            @Param("establishmentId")
+            UUID establishmentId,
+
+            @Param("accountCode")
+            String accountCode
+    );
+
+
+    // ============================================================
+    // GRAND LIVRE - AVEC INTERVALLE DE DATE
+    // ============================================================
+
+    @Query("""
+            select l
+            from AccountingEntryLine l
+            join fetch l.accountingEntry e
+            join fetch e.journal j
+            where e.establishment.id = :establishmentId
+              and upper(l.accountCode) = upper(:accountCode)
+              and e.status = com.schoolfinance.enums.AccountingEntryStatus.POSTED
+              and e.entryDate >= :fromDate
+              and e.entryDate <= :toDate
+            order by e.entryDate asc, e.entryNumber asc, l.lineNumber asc
+            """)
+    List<AccountingEntryLine> findPostedLedgerLinesBetween(
+            @Param("establishmentId")
+            UUID establishmentId,
+
+            @Param("accountCode")
+            String accountCode,
+
+            @Param("fromDate")
+            LocalDateTime fromDate,
+
+            @Param("toDate")
+            LocalDateTime toDate
+    );
+}

@@ -4,7 +4,6 @@ import com.schoolfinance.entity.administration.AcademicYear;
 import com.schoolfinance.entity.administration.Establishment;
 import com.schoolfinance.entity.base.BaseEntity;
 import com.schoolfinance.entity.expense.ExpensePayment;
-import com.schoolfinance.entity.finance.Payment;
 import com.schoolfinance.enums.AccountingEntryStatus;
 import jakarta.persistence.*;
 import lombok.*;
@@ -21,10 +20,6 @@ import java.util.UUID;
                 @UniqueConstraint(
                         name = "uq_accounting_entry_number",
                         columnNames = "entry_number"
-                ),
-                @UniqueConstraint(
-                        name = "uq_accounting_entry_student_payment",
-                        columnNames = "student_payment_id"
                 )
         },
         indexes = {
@@ -35,10 +30,6 @@ import java.util.UUID;
                 @Index(
                         name = "idx_accounting_entry_establishment",
                         columnList = "establishment_id"
-                ),
-                @Index(
-                        name = "idx_accounting_entry_student_payment",
-                        columnList = "student_payment_id"
                 )
         }
 )
@@ -89,17 +80,6 @@ public class AccountingEntry extends BaseEntity {
             unique = true
     )
     private ExpensePayment expensePayment;
-
-    /**
-     * Paiement eleve ayant genere l'ecriture.
-     * Distinct du paiement fournisseur.
-     */
-    @OneToOne(fetch = FetchType.LAZY)
-    @JoinColumn(
-            name = "student_payment_id",
-            unique = true
-    )
-    private Payment studentPayment;
 
     @Column(
             name = "entry_number",

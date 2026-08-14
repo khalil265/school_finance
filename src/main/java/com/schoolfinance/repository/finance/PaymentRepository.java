@@ -24,4 +24,9 @@ public interface PaymentRepository
             UUID studentId,
             UUID academicYearId
     );
+
+    List<Payment>
+    findByStudentAccountAcademicYearEstablishmentIdAndActiveTrueOrderByPaidAtDesc(
+            UUID establishmentId
+    );
 }
