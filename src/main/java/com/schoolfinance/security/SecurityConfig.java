@@ -51,7 +51,7 @@ public class SecurityConfig {
     public SecretKey jwtSecretKey() {
 
         byte[] decodedKey =
-                Base64.getDecoder().decode(jwtSecret);
+                Base64.getUrlDecoder().decode(jwtSecret);
 
         if (decodedKey.length < 32) {
             throw new IllegalStateException(

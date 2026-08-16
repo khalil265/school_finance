@@ -1,3 +1,109 @@
+$utf8NoBom = New-Object System.Text.UTF8Encoding $false
+
+function Write-FileNoBom($path, $content) {
+    [System.IO.File]::WriteAllText($path, $content, $utf8NoBom)
+    Write-Host "Ecrit : $path" -ForegroundColor Green
+}
+
+$enrollmentRepoPath = ".\src\main\java\com\schoolfinance\repository\academic\EnrollmentRepository.java"
+$enrollmentRepoContent = @"
+package com.schoolfinance.repository.academic;
+
+import com.schoolfinance.entity.academic.Enrollment;
+import com.schoolfinance.enums.EnrollmentStatus;
+import org.springframework.data.jpa.repository.JpaRepository;
+
+import java.util.List;
+import java.util.Optional;
+import java.util.UUID;
+
+public interface EnrollmentRepository
+        extends JpaRepository<Enrollment, UUID> {
+
+    boolean existsByStudentIdAndAcademicYearId(
+            UUID studentId,
+            UUID academicYearId
+    );
+
+    List<Enrollment>
+    findByStudentIdOrderByEnrollmentDateDesc(
+            UUID studentId
+    );
+
+    Optional<Enrollment>
+    findFirstByStudentIdAndStatusOrderByEnrollmentDateDesc(
+            UUID studentId,
+            EnrollmentStatus status
+    );
+}
+"@
+Write-FileNoBom $enrollmentRepoPath $enrollmentRepoContent
+
+$studentResponsePath = ".\src\main\java\com\schoolfinance\dto\student\StudentResponse.java"
+$studentResponseContent = @"
+package com.schoolfinance.dto.student;
+
+import com.schoolfinance.enums.Gender;
+import com.schoolfinance.enums.StudentStatus;
+
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.util.UUID;
+
+public record StudentResponse(
+
+        UUID id,
+
+        UUID establishmentId,
+
+        String establishmentName,
+
+        String registrationNumber,
+
+        String firstName,
+
+        String lastName,
+
+        Gender gender,
+
+        LocalDate dateOfBirth,
+
+        String placeOfBirth,
+
+        String nationality,
+
+        String phone,
+
+        String email,
+
+        String address,
+
+        String guardianName,
+
+        String guardianPhone,
+
+        String guardianEmail,
+
+        StudentStatus status,
+
+        UUID currentAcademicYearId,
+
+        String currentAcademicYearLabel,
+
+        UUID currentClassId,
+
+        String currentClassName,
+
+        LocalDateTime createdAt,
+
+        LocalDateTime updatedAt
+) {
+}
+"@
+Write-FileNoBom $studentResponsePath $studentResponseContent
+
+$studentServicePath = ".\src\main\java\com\schoolfinance\service\StudentService.java"
+$studentServiceContent = @"
 package com.schoolfinance.service;
 
 import com.schoolfinance.dto.student.*;
@@ -393,3 +499,8 @@ public class StudentService {
         );
     }
 }
+"@
+Write-FileNoBom $studentServicePath $studentServiceContent
+
+Write-Host ""
+Write-Host "Termine. Lance maintenant : .\mvnw.cmd clean compile" -ForegroundColor Yellow

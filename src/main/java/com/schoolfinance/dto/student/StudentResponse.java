@@ -43,6 +43,14 @@ public record StudentResponse(
 
         StudentStatus status,
 
+        UUID currentAcademicYearId,
+
+        String currentAcademicYearLabel,
+
+        UUID currentClassId,
+
+        String currentClassName,
+
         LocalDateTime createdAt,
 
         LocalDateTime updatedAt
