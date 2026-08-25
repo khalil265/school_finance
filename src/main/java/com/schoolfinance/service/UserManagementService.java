@@ -4,8 +4,10 @@ import com.schoolfinance.dto.security.*;
 import com.schoolfinance.entity.administration.Establishment;
 import com.schoolfinance.entity.security.Role;
 import com.schoolfinance.entity.security.User;
+import com.schoolfinance.entity.security.UserInvitation;
 import com.schoolfinance.repository.administration.EstablishmentRepository;
 import com.schoolfinance.repository.security.RoleRepository;
+import com.schoolfinance.repository.security.UserInvitationRepository;
 import com.schoolfinance.repository.security.UserRepository;
 import lombok.RequiredArgsConstructor;
 import org.springframework.http.HttpStatus;
@@ -24,13 +26,20 @@ import java.util.UUID;
 @RequiredArgsConstructor
 public class UserManagementService {
 
+    private static final long INVITATION_EXPIRATION_HOURS = 72;
+
+
     private final UserRepository userRepository;
 
     private final RoleRepository roleRepository;
 
     private final EstablishmentRepository establishmentRepository;
 
+    private final UserInvitationRepository invitationRepository;
+
     private final PasswordEncoder passwordEncoder;
+
+    private final MailService mailService;
 
 
     @Transactional(readOnly = true)
@@ -70,6 +79,9 @@ public class UserManagementService {
         String username =
                 request.username().trim();
 
+        String email =
+                request.email().trim();
+
         if (userRepository.existsByUsername(username)) {
 
             throw new ResponseStatusException(
@@ -78,9 +90,7 @@ public class UserManagementService {
             );
         }
 
-        if (request.email() != null
-                && !request.email().isBlank()
-                && userRepository.existsByEmail(request.email())) {
+        if (userRepository.existsByEmail(email)) {
 
             throw new ResponseStatusException(
                     HttpStatus.CONFLICT,
@@ -103,25 +113,25 @@ public class UserManagementService {
                             );
         }
 
+        String temporaryPassword =
+                UUID.randomUUID().toString();
+
         User user =
                 User.builder()
                         .establishment(establishment)
                         .username(username)
-                        .email(
-                                blankToNull(request.email())
-                        )
+                        .email(email)
                         .passwordHash(
                                 passwordEncoder.encode(
-                                        request.password()
+                                        temporaryPassword
                                 )
                         )
                         .firstName(request.firstName().trim())
                         .lastName(request.lastName().trim())
                         .phone(request.phone())
-                        .active(true)
+                        .active(false)
                         .locked(false)
                         .failedLoginAttempts(0)
-                        .passwordChangedAt(LocalDateTime.now())
                         .roles(
                                 resolveRoles(
                                         request.roleIds()
@@ -129,9 +139,33 @@ public class UserManagementService {
                         )
                         .build();
 
-        return toResponse(
-                userRepository.save(user)
+        User saved =
+                userRepository.save(user);
+
+        UUID token =
+                UUID.randomUUID();
+
+        UserInvitation invitation =
+                UserInvitation.builder()
+                        .user(saved)
+                        .token(token)
+                        .expiresAt(
+                                LocalDateTime.now()
+                                        .plusHours(INVITATION_EXPIRATION_HOURS)
+                        )
+                        .used(false)
+                        .build();
+
+        invitationRepository.save(invitation);
+
+        mailService.sendInvitation(
+                saved.getEmail(),
+                saved.getFirstName(),
+                saved.getUsername(),
+                token
         );
+
+        return toResponse(saved);
     }
 
 

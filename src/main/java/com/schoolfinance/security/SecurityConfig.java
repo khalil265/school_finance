@@ -28,6 +28,7 @@ import org.springframework.web.cors.UrlBasedCorsConfigurationSource;
 import javax.crypto.SecretKey;
 import javax.crypto.spec.SecretKeySpec;
 import java.util.Base64;
+import java.util.Arrays;
 import java.util.List;
 
 @Configuration
@@ -39,6 +40,9 @@ public class SecurityConfig {
 
     @Value("${app.jwt.issuer}")
     private String jwtIssuer;
+
+    @Value("${app.cors.allowed-origins}")
+    private String corsAllowedOrigins;
 
 
     @Bean
@@ -216,9 +220,10 @@ public class SecurityConfig {
                 new CorsConfiguration();
 
         configuration.setAllowedOrigins(
-                List.of(
-                        "http://localhost:4200"
-                )
+                Arrays.stream(corsAllowedOrigins.split(","))
+                        .map(String::trim)
+                        .filter(origin -> !origin.isBlank())
+                        .toList()
         );
 
         configuration.setAllowedMethods(
