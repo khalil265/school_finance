@@ -31,3 +31,10 @@ build/
 
 ### VS Code ###
 .vscode/
+
+
+# Fichiers de travail / diagnostics locaux
+*.log
+*.pdf
+diagnostic-*.ps1
+*-source.txt
