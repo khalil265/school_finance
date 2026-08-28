@@ -14,6 +14,9 @@ public record CreateExpenseRequest(
 
         UUID supplierId,
 
+        @NotNull
+        UUID expenseCategoryId,
+
         @NotBlank
         String subject,
 

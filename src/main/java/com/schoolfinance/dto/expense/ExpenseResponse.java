@@ -18,6 +18,12 @@ public record ExpenseResponse(
 
         String supplierName,
 
+        UUID expenseCategoryId,
+
+        String expenseCategoryCode,
+
+        String expenseCategoryName,
+
         String subject,
 
         String description,

@@ -60,6 +60,10 @@ public class ExpenseRequest extends BaseEntity {
     @JoinColumn(name = "supplier_id")
     private Supplier supplier;
 
+    @ManyToOne(fetch = FetchType.LAZY)
+    @JoinColumn(name = "expense_category_id")
+    private ExpenseCategory category;
+
     @Column(
             name = "expense_number",
             nullable = false,

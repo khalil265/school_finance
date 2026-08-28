@@ -3,10 +3,12 @@ package com.schoolfinance.service;
 import com.schoolfinance.dto.expense.CreateExpenseRequest;
 import com.schoolfinance.dto.expense.ExpenseResponse;
 import com.schoolfinance.entity.administration.Establishment;
+import com.schoolfinance.entity.expense.ExpenseCategory;
 import com.schoolfinance.entity.expense.ExpenseRequest;
 import com.schoolfinance.entity.expense.Supplier;
 import com.schoolfinance.enums.ExpenseStatus;
 import com.schoolfinance.repository.administration.EstablishmentRepository;
+import com.schoolfinance.repository.expense.ExpenseCategoryRepository;
 import com.schoolfinance.repository.expense.ExpenseRequestRepository;
 import com.schoolfinance.repository.expense.SupplierRepository;
 import lombok.RequiredArgsConstructor;
@@ -29,6 +31,8 @@ public class ExpenseService {
     private final ExpenseRequestRepository expenseRepository;
 
     private final SupplierRepository supplierRepository;
+
+    private final ExpenseCategoryRepository categoryRepository;
 
     private final EstablishmentRepository establishmentRepository;
 
@@ -83,10 +87,37 @@ public class ExpenseService {
         }
 
 
+        ExpenseCategory category =
+                categoryRepository
+                        .findById(request.expenseCategoryId())
+                        .orElseThrow(() ->
+                                new ResponseStatusException(
+                                        HttpStatus.NOT_FOUND,
+                                        "Categorie de depense introuvable."
+                                )
+                        );
+
+        if (
+                !category
+                        .getEstablishment()
+                        .getId()
+                        .equals(
+                                request.establishmentId()
+                        )
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.BAD_REQUEST,
+                    "La categorie de depense n'appartient pas a cet etablissement."
+            );
+        }
+
+
         ExpenseRequest expense =
                 ExpenseRequest.builder()
                         .establishment(establishment)
                         .supplier(supplier)
+                        .category(category)
                         .expenseNumber(
                                 generateExpenseNumber()
                         )
@@ -440,6 +471,9 @@ public class ExpenseService {
         Supplier supplier =
                 expense.getSupplier();
 
+        ExpenseCategory category =
+                expense.getCategory();
+
 
         return new ExpenseResponse(
                 expense.getId(),
@@ -451,6 +485,15 @@ public class ExpenseService {
                 supplier == null
                         ? null
                         : supplier.getName(),
+                category == null
+                        ? null
+                        : category.getId(),
+                category == null
+                        ? null
+                        : category.getCode(),
+                category == null
+                        ? null
+                        : category.getName(),
                 expense.getSubject(),
                 expense.getDescription(),
                 expense.getAmount(),
