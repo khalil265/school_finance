@@ -92,7 +92,7 @@ public class ExpenseController {
 
 
     @PostMapping("/{id}/reject")
-    @PreAuthorize("hasAuthority('EXPENSE_APPROVE')")
+    @PreAuthorize("hasAnyAuthority('EXPENSE_VERIFY','EXPENSE_APPROVE')")
     public ExpenseResponse reject(
             @PathVariable
             UUID id,
@@ -108,4 +108,3 @@ public class ExpenseController {
         );
     }
 }
-
