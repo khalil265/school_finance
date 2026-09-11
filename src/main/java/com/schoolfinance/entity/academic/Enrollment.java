@@ -79,6 +79,11 @@ public class Enrollment extends BaseEntity {
     private SchoolClass schoolClass;
 
     @Column(
+            name = "class_number"
+    )
+    private Integer classNumber;
+
+    @Column(
             name = "enrollment_date",
             nullable = false
     )

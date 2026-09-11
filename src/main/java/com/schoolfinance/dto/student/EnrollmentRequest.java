@@ -13,6 +13,8 @@ public record EnrollmentRequest(
         @NotNull
         UUID schoolClassId,
 
+        Integer classNumber,
+
         LocalDate enrollmentDate,
 
         String notes

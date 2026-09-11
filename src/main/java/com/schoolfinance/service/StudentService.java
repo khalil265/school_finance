@@ -92,6 +92,7 @@ public class StudentService {
                         .guardianPhone(request.guardianPhone())
                         .guardianEmail(request.guardianEmail())
                         .status(StudentStatus.ACTIVE)
+                        .photoBase64(request.photoBase64())
                         .build();
 
         return toResponse(
@@ -196,6 +197,13 @@ public class StudentService {
                 request.status()
         );
 
+        if (request.photoBase64() != null) {
+
+            student.setPhotoBase64(
+                    request.photoBase64()
+            );
+        }
+
         return toResponse(
                 studentRepository.save(student)
         );
@@ -275,6 +283,7 @@ public class StudentService {
                         .student(student)
                         .academicYear(academicYear)
                         .schoolClass(schoolClass)
+                        .classNumber(request.classNumber())
                         .enrollmentDate(
                                 request.enrollmentDate() == null
                                         ? LocalDate.now()
@@ -356,6 +365,7 @@ public class StudentService {
                 student.getGuardianPhone(),
                 student.getGuardianEmail(),
                 student.getStatus(),
+                student.getPhotoBase64(),
                 currentEnrollment != null
                         ? currentEnrollment.getAcademicYear().getId()
                         : null,
@@ -387,6 +397,7 @@ public class StudentService {
                 enrollment.getSchoolClass().getId(),
                 enrollment.getSchoolClass().getName(),
                 enrollment.getSchoolClass().getLevel().getName(),
+                enrollment.getClassNumber(),
                 enrollment.getEnrollmentDate(),
                 enrollment.getStatus(),
                 enrollment.getNotes()

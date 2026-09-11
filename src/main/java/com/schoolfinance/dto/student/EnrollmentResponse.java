@@ -23,6 +23,8 @@ public record EnrollmentResponse(
 
         String level,
 
+        Integer classNumber,
+
         LocalDate enrollmentDate,
 
         EnrollmentStatus status,

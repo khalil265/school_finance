@@ -146,4 +146,10 @@ public class Student extends BaseEntity {
     )
     @Builder.Default
     private StudentStatus status = StudentStatus.ACTIVE;
+
+    @Column(
+            name = "photo_base64",
+            columnDefinition = "TEXT"
+    )
+    private String photoBase64;
 }

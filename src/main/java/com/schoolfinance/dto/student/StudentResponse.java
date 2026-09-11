@@ -43,6 +43,8 @@ public record StudentResponse(
 
         StudentStatus status,
 
+        String photoBase64,
+
         UUID currentAcademicYearId,
 
         String currentAcademicYearLabel,
