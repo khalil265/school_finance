@@ -254,10 +254,22 @@ public class ExpenseService {
                 getEntity(id);
 
 
-        requireStatus(
-                expense,
-                ExpenseStatus.BUDGET_CHECKED
-        );
+        ExpenseStatus previousStatus =
+                expense.getStatus();
+
+
+        if (
+                previousStatus != ExpenseStatus.SUBMITTED
+                && previousStatus != ExpenseStatus.VERIFIED
+                && previousStatus != ExpenseStatus.BUDGET_CHECKED
+        ) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Cette depense ne peut pas etre approuvee depuis son statut actuel : "
+                            + previousStatus
+            );
+        }
 
 
         expense.setStatus(
@@ -283,7 +295,7 @@ public class ExpenseService {
                 "EXPENSE_APPROVED",
                 "ExpenseRequest",
                 expense.getId(),
-                "BUDGET_CHECKED",
+                previousStatus.name(),
                 "APPROVED"
         );
 
