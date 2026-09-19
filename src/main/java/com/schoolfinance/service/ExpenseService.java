@@ -3,11 +3,17 @@ package com.schoolfinance.service;
 import com.schoolfinance.dto.expense.CreateExpenseRequest;
 import com.schoolfinance.dto.expense.ExpenseResponse;
 import com.schoolfinance.entity.administration.Establishment;
+import com.schoolfinance.entity.budget.Budget;
+import com.schoolfinance.entity.budget.BudgetLine;
 import com.schoolfinance.entity.expense.ExpenseCategory;
 import com.schoolfinance.entity.expense.ExpenseRequest;
 import com.schoolfinance.entity.expense.Supplier;
+import com.schoolfinance.enums.BudgetStatus;
 import com.schoolfinance.enums.ExpenseStatus;
 import com.schoolfinance.repository.administration.EstablishmentRepository;
+import com.schoolfinance.repository.budget.BudgetCommitmentRepository;
+import com.schoolfinance.repository.budget.BudgetLineRepository;
+import com.schoolfinance.repository.budget.BudgetRepository;
 import com.schoolfinance.repository.expense.ExpenseCategoryRepository;
 import com.schoolfinance.repository.expense.ExpenseRequestRepository;
 import com.schoolfinance.repository.expense.SupplierRepository;
@@ -35,6 +41,14 @@ public class ExpenseService {
     private final ExpenseCategoryRepository categoryRepository;
 
     private final EstablishmentRepository establishmentRepository;
+
+    private final BudgetRepository budgetRepository;
+
+    private final BudgetLineRepository budgetLineRepository;
+
+    private final BudgetCommitmentRepository budgetCommitmentRepository;
+
+    private final BudgetService budgetService;
 
     private final AuditService auditService;
 
@@ -272,6 +286,65 @@ public class ExpenseService {
         }
 
 
+        if (previousStatus == ExpenseStatus.SUBMITTED) {
+
+            expense.setStatus(
+                    ExpenseStatus.VERIFIED
+            );
+
+            expense.setVerifiedBy(
+                    currentUsername()
+            );
+
+            expense.setVerifiedAt(
+                    LocalDateTime.now()
+            );
+
+            expense =
+                    expenseRepository.save(
+                            expense
+                    );
+
+            auditService.log(
+                    "EXPENSE_VERIFIED",
+                    "ExpenseRequest",
+                    expense.getId(),
+                    "SUBMITTED",
+                    "VERIFIED"
+            );
+        }
+
+
+        if (
+                expense.getStatus() == ExpenseStatus.VERIFIED
+                && !budgetCommitmentRepository
+                        .existsByExpenseRequestId(id)
+        ) {
+
+            BudgetLine chosenLine =
+                    findAvailableBudgetLine(
+                            expense
+                    );
+
+            if (chosenLine == null) {
+
+                throw new ResponseStatusException(
+                        HttpStatus.CONFLICT,
+                        "Aucune ligne budgetaire active avec un solde suffisant n'est disponible pour approuver cette depense."
+                );
+            }
+
+
+            budgetService.checkAndCommit(
+                    id,
+                    chosenLine.getId()
+            );
+
+
+            expense = getEntity(id);
+        }
+
+
         expense.setStatus(
                 ExpenseStatus.APPROVED
         );
@@ -304,6 +377,44 @@ public class ExpenseService {
     }
 
 
+    private BudgetLine findAvailableBudgetLine(
+            ExpenseRequest expense
+    ) {
+
+        List<Budget> activeBudgets =
+                budgetRepository
+                        .findByEstablishmentIdAndStatus(
+                                expense.getEstablishment().getId(),
+                                BudgetStatus.ACTIVE
+                        );
+
+
+        for (Budget budget : activeBudgets) {
+
+            List<BudgetLine> lines =
+                    budgetLineRepository
+                            .findByBudgetIdAndActiveTrueOrderByCodeAsc(
+                                    budget.getId()
+                            );
+
+            for (BudgetLine line : lines) {
+
+                if (
+                        line.getAvailableAmount()
+                                .compareTo(
+                                        expense.getAmount()
+                                ) >= 0
+                ) {
+
+                    return line;
+                }
+            }
+        }
+
+        return null;
+    }
+
+
     @Transactional
     public ExpenseResponse reject(
             UUID id,
@@ -320,6 +431,9 @@ public class ExpenseService {
                 &&
                 expense.getStatus()
                         != ExpenseStatus.VERIFIED
+                &&
+                expense.getStatus()
+                        != ExpenseStatus.BUDGET_CHECKED
         ) {
 
             throw new ResponseStatusException(
