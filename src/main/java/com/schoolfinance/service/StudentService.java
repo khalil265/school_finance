@@ -14,6 +14,7 @@ import com.schoolfinance.repository.academic.StudentRepository;
 import com.schoolfinance.repository.administration.AcademicYearRepository;
 import com.schoolfinance.repository.administration.EstablishmentRepository;
 import lombok.RequiredArgsConstructor;
+import org.springframework.dao.DataIntegrityViolationException;
 import org.springframework.data.domain.Page;
 import org.springframework.data.domain.Pageable;
 import org.springframework.http.HttpStatus;
@@ -300,6 +301,35 @@ public class StudentService {
         return toEnrollmentResponse(
                 enrollmentRepository.save(enrollment)
         );
+    }
+
+
+    @Transactional
+    public void delete(
+            UUID id
+    ) {
+
+        Student student =
+                getStudent(id);
+
+
+        try {
+
+            studentRepository.delete(
+                    student
+            );
+
+            studentRepository.flush();
+
+        }
+        catch (DataIntegrityViolationException e) {
+
+            throw new ResponseStatusException(
+                    HttpStatus.CONFLICT,
+                    "Impossible de supprimer cet eleve : il possede des inscriptions, paiements ou factures associes. "
+                            + "Desactivez-le plutot (statut Inactif) depuis sa fiche."
+            );
+        }
     }
 
 

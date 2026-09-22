@@ -77,6 +77,19 @@ public class StudentController {
     }
 
 
+    @DeleteMapping("/{id}")
+    @PreAuthorize("hasAuthority('STUDENT_UPDATE')")
+    public ResponseEntity<Void> delete(
+            @PathVariable
+            UUID id
+    ) {
+
+        studentService.delete(id);
+
+        return ResponseEntity.noContent().build();
+    }
+
+
     @PutMapping("/{id}")
     @PreAuthorize("hasAuthority('STUDENT_UPDATE')")
     public StudentResponse update(
